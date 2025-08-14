@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Cluster, ALB, TaskDefinitions and Services for frontend + backend (Fargate)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnets:
+    Type: CommaDelimitedList
+    Description: Public subnets for the ALB
+  PrivateSubnets:
+    Type: CommaDelimitedList
+    Description: Private subnets for ECS tasks
+  Ec2KeyPair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: (Optional) EC2 keypair; not needed for Fargate but kept for symmetry
+    Default: ''
+  FrontendImage:
+    Type: String
+    Description: Frontend ECR image URI (with tag)
+  BackendImage:
+    Type: String
+    Description: Backend ECR image URI (with tag)
+  ECSTaskExecutionRoleArn:
+    Type: String
+  ECSTaskRoleArn:
+    Type: String
+  CertificateArn:
+    Type: String
+    Default: ''
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${EnvironmentName}-ecs-cluster"
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvironmentName}-alb"
+      Scheme: internet-facing
+      Subnets: !Ref PublicSubnets
+      SecurityGroups: []
+
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '200'
+            ContentType: text/plain
+            MessageBody: OK
+
+  # Optional HTTPS listener if CertificateArn provided
+  ALBListenerHTTPS:
+    Condition: HasCertificate
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '200'
+            ContentType: text/plain
+            MessageBody: OK
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-tg-frontend"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-tg-backend"
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+
+  # Listener rules: route /api or /movies or /admin to backend, others to frontend
+  FrontendRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTP
+      Priority: 100
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/'
+            - '/index.html'
+            - '/static/*'
+            - '/*'     # default to frontend
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  BackendApiRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTP
+      Priority: 110
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/api/*'
+            - '/movies*'
+            - '/auth*'
+            - '/admin*'
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  # ECS Task Definitions
+  FrontendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${EnvironmentName}-frontend-task"
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities: ["FARGATE"]
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ECSTaskRoleArn
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Ref FrontendImage
+          PortMappings:
+            - ContainerPort: 80
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "/ecs/${EnvironmentName}/frontend"
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: frontend
+
+  BackendTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${EnvironmentName}-backend-task"
+      Cpu: 512
+      Memory: 1024
+      NetworkMode: awsvpc
+      RequiresCompatibilities: ["FARGATE"]
+      ExecutionRoleArn: !Ref ECSTaskExecutionRoleArn
+      TaskRoleArn: !Ref ECSTaskRoleArn
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImage
+          PortMappings:
+            - ContainerPort: 5000
+          Essential: true
+          Environment:
+            - Name: S3_BUCKET
+              Value: !Ref "VideoBucketName" # pass via parameter when deploying or override
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub "/ecs/${EnvironmentName}/backend"
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: backend
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Sub "${EnvironmentName}-frontend-svc"
+      LaunchType: FARGATE
+      DesiredCount: 2
+      TaskDefinition: !Ref FrontendTaskDef
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnets
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref FrontendTargetGroup
+          ContainerName: frontend
+          ContainerPort: 80
+
+  BackendService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: !Sub "${EnvironmentName}-backend-svc"
+      LaunchType: FARGATE
+      DesiredCount: 2
+      TaskDefinition: !Ref BackendTaskDef
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref PrivateSubnets
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          ContainerName: backend
+          ContainerPort: 5000
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
+
+Outputs:
+  LoadBalancerDNS:
+    Description: "ALB DNS name"
+    Value: !GetAtt ALB.DNSName
+  FrontendServiceName:
+    Value: !Ref FrontendService
+  BackendServiceName:
+    Value: !Ref BackendService
