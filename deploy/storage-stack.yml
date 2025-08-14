@@ -36,7 +36,6 @@ Resources:
                 StorageClass: STANDARD_IA
               - TransitionInDays: 90
                 StorageClass: GLACIER
-            NoncurrentVersionTransitions: []
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -59,12 +58,6 @@ Resources:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
-  # Using Conditions to choose KMS or AES256
-Conditions:
-  UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
-  NotUseKms: !Equals [!Ref KmsKeyArn, ""]
-
-  # DynamoDB table for movies
   MoviesTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -118,6 +111,10 @@ Conditions:
             ProjectionType: ALL
       SSESpecification:
         SSEEnabled: true
+
+Conditions:
+  UseKms: !Not [!Equals [!Ref KmsKeyArn, ""]]
+  NotUseKms: !Equals [!Ref KmsKeyArn, ""]
 
 Outputs:
   VideoBucketName:
