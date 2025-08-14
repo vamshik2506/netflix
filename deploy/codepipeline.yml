@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Skeleton CodePipeline for building images and deploying to ECS
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+  GitHubOwner:
+    Type: String
+  GitHubRepo:
+    Type: String
+  GitHubBranch:
+    Type: String
+    Default: main
+  GitHubOAuthToken:
+    Type: String
+    NoEcho: true
+  CodeBuildRoleArn:
+    Type: String
+  PipelineRoleArn:
+    Type: String
+
+Resources:
+  SourceArtifactStore:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${EnvironmentName}-build"
+      ServiceRole: !Ref CodeBuildRoleArn
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+      Source:
+        Type: GITHUB
+        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}.git"
+      Artifacts:
+        Type: S3
+        Location: !Ref SourceArtifactStore
+      TimeoutInMinutes: 60
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !Ref PipelineRoleArn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              OutputArtifacts:
+                - Name: SourceOut
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubOAuthToken
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceOut
+              OutputArtifacts:
+                - Name: BuildOut
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+        # Add Deploy stage using CodeDeploy or ECS deploy action
+      ArtifactStore:
+        Type: S3
+        Location: !Ref SourceArtifactStore
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
