@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create ECR repositories for frontend and backend
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+  FrontendRepoName:
+    Type: String
+    Default: netflix-frontend
+  BackendRepoName:
+    Type: String
+    Default: netflix-backend
+
+Resources:
+  FrontendRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref FrontendRepoName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-frontend-ecr"
+
+  BackendRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref BackendRepoName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-backend-ecr"
+
+Outputs:
+  FrontendEcrUri:
+    Value: !GetAtt FrontendRepo.RepositoryUri
+  BackendEcrUri:
+    Value: !GetAtt BackendRepo.RepositoryUri
